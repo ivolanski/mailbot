@@ -1,0 +1,2 @@
+# mailbot
+Email bot manager
