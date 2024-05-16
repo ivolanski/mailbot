@@ -4,10 +4,20 @@ import time
 import smtplib, ssl
 import configparser
 import codecs
+import os
 from email.mime.multipart import MIMEMultipart, MIMEBase
 from email.mime.text import MIMEText
 from email.mime.image import MIMEImage
 from email.encoders import encode_base64
+from datetime import datetime
+import logging
+from systemd.journal import JournalHandler
+
+
+#log habdler
+log = logging.getLogger('mailbot')
+log.addHandler(JournalHandler())
+log.setLevel(logging.INFO)
 
 #Global vars
 ini = ''
@@ -62,12 +72,21 @@ def create_body(html_path,msg):
     result +='</ul>'
     return result
 
-def read_file(path):
+def read_file(writepath):
     text = ''
-    with codecs.open(path, encoding='utf-8') as f:
+    if os.path.exists(writepath):
+        pass
+    else:
+        append_file(writepath,'')
+    with codecs.open(writepath, encoding='utf-8') as f:
         for line in f:
             text+=line
     return text
+
+def append_file(writepath,text):
+    mode = 'a' if os.path.exists(writepath) else 'w'
+    with open(writepath, mode) as f:
+        f.write(text)
 
 def load_credentials():
     global mail_user, mail_passwd, imap_host, smtp_host, smtp_port
@@ -98,18 +117,24 @@ def move_mail(imap,msg_uid,dest_folder):
     if result[0] == 'OK':
         mov, data = imap_server.uid('STORE', msg_uid , '+FLAGS', '(\Deleted)')
         imap_server.expunge()
-        
+def print_datetime():
+    log.info(get_datetime())
+
+def get_datetime():
+    now = datetime.now()
+    return now.strftime("%d/%m/%Y %H:%M:%S")
+    
+
 def print_message(message,message_number):
-    print()
-    print('====== New mail  =========')
-    print(f'From: {message["from"]}')
-    print(f'To: {message["to"]}')
-    print(f'Subject: {message["subject"]}')
+    log.info('====== New mail subject rule match  =========')
+    log.info('Sent: '+message["Date"])
+    log.info(f'From: {message["from"]}')
+    log.info(f'To: {message["to"]}')
+    log.info(f'Subject: {message["subject"]}')
     
         
 
 def load_mail(imap_server, search):
-    print('.',end='')
     _, message_numbers_raw = imap_server.uid('search', None, search)
     for message_number in message_numbers_raw[0].split():
         _, msg = imap_server.uid('fetch',message_number, '(RFC822)')        
@@ -122,6 +147,10 @@ def process_rules(message,message_number):
     mail_from = mail_from.split('<')
     mail_from = mail_from[-1]
     mail_from=mail_from.replace('>','')
+    #log.info('###############################')
+    #log.info("Message Found from: "+mail_from)
+    #log.info("Subject: "+message['subject'])
+    #log.info('Date: '+message['Date'])
     for section in ini.sections():
         filter_type = ini.get(section,'filter_type')
         subject = ini.get(section,'subject')
@@ -139,7 +168,8 @@ def process_rules(message,message_number):
 
         #here we go
         if filter_type == 'subject':
-            if subject.upper() in message['subject'].upper():
+            #if subject.upper() in message['subject'].upper():
+            if message['subject'].upper().startswith(subject.upper()):
                 print_message(message, message_number)
                 html_text = create_body(html_path,message)
                 print('Preparing to send email')
@@ -148,11 +178,16 @@ def process_rules(message,message_number):
                 send_mail(dest,message['subject'],html_text,image)
                 if move_message=='yes':
                     move_mail(imap_server,message_number,move_to)
+                if black_list_path != 'none' and mail_from not in black_list:
+                    append_file(black_list_path,mail_from+';\n')
+                log.info('Action: Mail accepted')
                 return
 
         if filter_type == 'black_list':
-            if mail_from in black_list and subject not in message['subject']:
+            #if mail_from in black_list and subject not in message['subject']:
+            if mail_from in black_list and not  message['subject'].upper().startswith(subject.upper()):
                 print_message(message, message_number)
+                log.info('Black listing message')
                 html_text = create_body(html_path,message)
                 print('Preparing to send email')
                 dest = []
@@ -160,6 +195,7 @@ def process_rules(message,message_number):
                 send_mail(dest,message['subject'],html_text,image)
                 if move_message=='yes':
                     move_mail(imap_server,message_number,move_to)
+                log.info('Action: Mail blacklisted')
                 return 
 
 def send_mail(to_emails,subject, msg_html_body,images):
@@ -187,12 +223,24 @@ def send_mail(to_emails,subject, msg_html_body,images):
         server.quit()
     print('Mail sent')
 
+print('STARTING MAILBOT')
+print('=================================')
 while True:
     try:
+        log.info("##############################   LOOPING ############################")
+        #print_datetime()
+        append_file('logs/running.log','\n'+get_datetime())
         imap_server = mail_connect()
-        load_mail(imap_server, 'NEW')
-    except Exception as e: print(e)
-    time.sleep(10)
+        load_mail(imap_server, 'All')
+        #load_mail(imap_server, 'SUBJECT "IT"')
+        log.info("End of loop")
+    except Exception as e: 
+        log.error("!!!!!!!!!!!!!!!!!!!!!!!!!!! Loop error !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        log.info(e)
+        #print_datetime()
+        print(e)
+    time.sleep(60)
 
 
     
+
